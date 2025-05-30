@@ -22,6 +22,12 @@ BALL_START_POS = pygame.math.Vector2(SCREEN_WIDTH // 4, SCREEN_HEIGHT // 2)
 HOLE_RADIUS = 20
 HOLE_POS = pygame.math.Vector2(SCREEN_WIDTH * 3 // 4, SCREEN_HEIGHT // 2)
 
+# --- Physics Constants ---
+# Friction factor per second. 0.8 means 20% velocity loss per second.
+# A value closer to 1 means less friction.
+FIELD_FRICTION_FACTOR_PER_SECOND = 0.8
+# Threshold below which velocity is considered zero
+VELOCITY_STOP_THRESHOLD = 0.1
 
 # --- Game Components ---
 
@@ -55,11 +61,20 @@ class Hole:
 
     def draw(self, surface):
         """Draw the hole on the surface."""
-        # Draw outer ring (darker color) and inner hole (black)
-        outer_color = (max(0, self.color[0]-50), max(0, self.color[1]-50), max(0, self.color[2]-50))
+        # Draw outer ring (dark grey) and inner hole (black)
+        outer_color = (50, 50, 50) # Dark grey
         # Draw using the Vector2 position (converted to int tuple)
         pygame.draw.circle(surface, outer_color, (int(self.position.x), int(self.position.y)), self.radius + 5) # Outer ring
-        pygame.draw.circle(surface, (0, 0, 0), (int(self.position.x), int(self.position.y)), self.radius) # Inner hole
+        pygame.draw.circle(surface, BLACK, (int(self.position.x), int(self.position.y)), self.radius) # Inner hole
+
+    def is_ball_in_hole(self, ball):
+        """Check if the ball is within the hole's radius."""
+        distance_sq = (ball.position - self.position).length_squared()
+        # Ball is in hole if its center is within the hole's radius
+        # A slightly more forgiving check might be needed depending on desired gameplay
+        # Let's use a threshold slightly less than hole radius to prevent flickering
+        threshold_sq = (self.radius * 0.8)**2 # Adjust threshold as needed
+        return distance_sq < threshold_sq
 
 
 class Field:
@@ -70,7 +85,7 @@ class Field:
         self.color = color
         # Friction factor per second. 0.8 means 20% velocity loss per second.
         # A value closer to 1 means less friction.
-        self.friction_factor_per_second = 0.8
+        self.friction_factor_per_second = FIELD_FRICTION_FACTOR_PER_SECOND
 
     def draw(self, surface):
         """Draw the field background/elements."""
@@ -82,37 +97,50 @@ class PhysicsEngine:
     """Handles physics calculations (movement, collisions, friction, etc.)."""
     def __init__(self, field):
         self.field = field
-        # Minimum speed squared to stop the ball (pixels/second)^2
-        # Using squared value avoids sqrt calculation for comparison
-        self.min_speed_sq_to_stop = 20 # Adjust this value as needed (e.g., 5 pixels/sec -> 25)
+        self.velocity_stop_threshold = VELOCITY_STOP_THRESHOLD
 
     def update(self, ball, dt):
-        """Apply physics to the ball."""
-
-        # Check if ball is considered moving based on velocity threshold
-        if ball.velocity.length_squared() < self.min_speed_sq_to_stop:
-            # If velocity is below threshold, stop the ball completely
-            ball.velocity = pygame.math.Vector2(0, 0)
-            ball.is_moving = False
-            return # Ball stopped, no further physics needed this frame
-
-        # If ball has significant velocity, mark it as moving
-        ball.is_moving = True
+        """Update physics for the ball."""
+        if not ball.is_moving and ball.velocity.magnitude() < self.velocity_stop_threshold:
+             # Ball is stopped, no physics update needed
+             ball.velocity = pygame.math.Vector2(0, 0) # Ensure velocity is exactly zero
+             return
 
         # Apply friction
-        # Calculate the multiplier for this time step (dt seconds)
-        # velocity_after_dt = velocity_before_dt * (friction_factor_per_second ** dt)
-        friction_multiplier = self.field.friction_factor_per_second ** dt
-        ball.velocity *= friction_multiplier
+        # The friction factor is per second, so we raise it to the power of dt
+        friction_per_frame = self.field.friction_factor_per_second ** dt
+        ball.velocity *= friction_per_frame
 
-        # Update position based on velocity and time delta
+        # Update position based on velocity
         ball.position += ball.velocity * dt
 
-        # Basic boundary checking (optional for now, but good practice)
-        # if ball.position.x < ball.radius: ball.position.x = ball.radius; ball.velocity.x *= -0.5 # Bounce
-        # if ball.position.x > SCREEN_WIDTH - ball.radius: ball.position.x = SCREEN_WIDTH - ball.radius; ball.velocity.x *= -0.5
-        # if ball.position.y < ball.radius: ball.position.y = ball.radius; ball.velocity.y *= -0.5
-        # if ball.position.y > SCREEN_HEIGHT - ball.radius: ball.position.y = SCREEN_HEIGHT - ball.radius; ball.velocity.y *= -0.5
+        # Handle boundary collisions
+        # Check left boundary
+        if ball.position.x - ball.radius < 0:
+            ball.position.x = ball.radius # Reposition to boundary
+            ball.velocity.x *= -1 # Reverse x velocity
+
+        # Check right boundary
+        if ball.position.x + ball.radius > self.field.width:
+            ball.position.x = self.field.width - ball.radius # Reposition to boundary
+            ball.velocity.x *= -1 # Reverse x velocity
+
+        # Check top boundary
+        if ball.position.y - ball.radius < 0:
+            ball.position.y = ball.radius # Reposition to boundary
+            ball.velocity.y *= -1 # Reverse y velocity
+
+        # Check bottom boundary
+        if ball.position.y + ball.radius > self.field.height:
+            ball.position.y = self.field.height - ball.radius # Reposition to boundary
+            ball.velocity.y *= -1 # Reverse y velocity
+
+        # Check if ball has stopped moving
+        if ball.velocity.magnitude() < self.velocity_stop_threshold:
+            ball.velocity = pygame.math.Vector2(0, 0)
+            ball.is_moving = False
+        else:
+             ball.is_moving = True # Ensure is_moving is True if velocity is significant
 
 
 class Renderer:
@@ -121,7 +149,7 @@ class Renderer:
         self.screen = screen
 
     def render(self, field, ball, hole):
-        """Draw all game objects."""
+        """Draw all game elements."""
         # Draw field background
         self.screen.fill(field.color)
 
@@ -134,125 +162,81 @@ class Renderer:
         # Update the full display Surface to the screen
         pygame.display.flip()
 
-
-# --- Game Manager / Main Loop ---
-
-class GameManager:
-    """Manages the game state and main loop."""
+# --- Game State ---
+class GameState:
+    """Manages the overall game state (playing, menu, game over, etc.)."""
     def __init__(self):
-        pygame.init()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Simple Golf Game")
-        self.clock = pygame.time.Clock()
+        self.state = "playing" # Possible states: "playing", "won", "lost", "menu"
 
-        # --- Game Objects ---
-        self.field = Field(SCREEN_WIDTH, SCREEN_HEIGHT, GREEN)
-        # Create ball and hole using Vector2 positions
-        self.ball = Ball(BALL_START_POS, BALL_RADIUS, RED)
-        self.hole = Hole(HOLE_POS, HOLE_RADIUS, BLACK) # Using BLACK for the hole color
+    def set_state(self, new_state):
+        self.state = new_state
 
-        # --- Game Systems ---
-        self.physics_engine = PhysicsEngine(self.field)
-        self.renderer = Renderer(self.screen)
+    def is_playing(self):
+        return self.state == "playing"
 
-        # --- Game State ---
-        self.game_state = "AIMING" # Possible states: "AIMING", "BALL_MOVING", "BALL_IN_HOLE"
-        self.aim_start_pos = None # Position where mouse click started for aiming
-        self.aim_end_pos = None   # Current mouse position while aiming
+    def is_won(self):
+        return self.state == "won"
 
-    def handle_input(self):
-        """Handles user input events."""
+    # Add other state checks as needed
+
+# --- Main Game Function ---
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("Mini Golf")
+    clock = pygame.time.Clock()
+
+    # --- Game Objects ---
+    field = Field(SCREEN_WIDTH, SCREEN_HEIGHT, GREEN)
+    ball = Ball(BALL_START_POS, BALL_RADIUS, RED)
+    hole = Hole(HOLE_POS, HOLE_RADIUS, BLACK) # Use BLACK for hole color
+
+    # --- Systems ---
+    physics_engine = PhysicsEngine(field)
+    renderer = Renderer(screen)
+    game_state = GameState() # Initialize game state
+
+    # --- Game Loop ---
+    running = True
+    while running:
+        dt = clock.tick(FPS) / 1000.0 # Delta time in seconds
+
+        # --- Event Handling ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return False # Signal to quit the game
+                running = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if game_state.is_playing() and not ball.is_moving:
+                    mouse_pos = pygame.math.Vector2(event.pos)
+                    direction_vector = mouse_pos - ball.position
 
-            if self.game_state == "AIMING":
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1: # Left click
-                        # Store start position as a Vector2
-                        self.aim_start_pos = pygame.math.Vector2(event.pos)
-                        self.aim_end_pos = pygame.math.Vector2(event.pos) # Start drawing line immediately
-                elif event.type == pygame.MOUSEMOTION:
-                    if self.aim_start_pos is not None:
-                        # Update end position as a Vector2
-                        self.aim_end_pos = pygame.math.Vector2(event.pos)
-                elif event.type == pygame.MOUSEBUTTONUP:
-                    if event.button == 1 and self.aim_start_pos is not None:
-                        # Calculate velocity vector from start to end position
-                        # The vector points from where the mouse is released back to where it was pressed
-                        aim_vector = self.aim_start_pos - self.aim_end_pos
-                        # Apply a scaling factor to control power
-                        power_scale = 5 # Adjust this value to control how hard the ball is hit
-                        self.ball.velocity = aim_vector * power_scale
-                        # The physics engine will set is_moving based on velocity magnitude
-                        # self.ball.is_moving = True # Physics engine handles this based on velocity
-                        self.game_state = "BALL_MOVING"
-                        self.aim_start_pos = None
-                        self.aim_end_pos = None
-            # Add input handling for other states if needed
+                    # Calculate power based on distance from ball to click
+                    # Adjust power_scale and max_initial_speed as needed
+                    power_scale = 2.0 # Multiplier for distance to speed
+                    max_initial_speed = 500.0 # Max speed in pixels per second
 
-        return True # Signal to continue the game
+                    distance = direction_vector.magnitude()
 
-    def update(self, dt):
-        """Updates game state."""
-        if self.game_state == "BALL_MOVING":
-            self.physics_engine.update(self.ball, dt)
+                    if distance > 0: # Avoid division by zero if clicked exactly on the ball
+                        initial_speed = min(distance * power_scale, max_initial_speed)
+                        ball.velocity = direction_vector.normalize() * initial_speed
+                        ball.is_moving = True # Set ball to moving state
 
-            # Check if ball stopped moving (physics engine sets ball.is_moving)
-            if not self.ball.is_moving:
-                 print("Ball stopped. Transitioning to AIMING.") # Debug print
-                 self.game_state = "AIMING" # Transition back to aiming state
+        # --- Update Game State ---
+        if game_state.is_playing():
+            physics_engine.update(ball, dt)
 
-            # Check if ball is in the hole (simple distance check)
-            distance_to_hole = self.ball.position.distance_to(self.hole.position)
-            # Ball is in hole if distance is less than hole radius minus ball radius (approx)
-            # Add a small tolerance
-            if distance_to_hole < self.hole.radius - self.ball.radius * 0.5: # Tolerance added
-                 print("Ball in hole! Transitioning to BALL_IN_HOLE.") # Debug print
-                 self.game_state = "BALL_IN_HOLE" # Or transition to game over/next level
+            # Check for win condition
+            if not ball.is_moving and hole.is_ball_in_hole(ball):
+                 game_state.set_state("won")
+                 print("You Won!") # Simple win message for now
 
-        # Add update logic for other states if needed
-        elif self.game_state == "BALL_IN_HOLE":
-            # Maybe show a message, wait for input to restart, etc.
-            pass # For now, just stay in this state
+        # --- Rendering ---
+        renderer.render(field, ball, hole)
 
+    pygame.quit()
+    sys.exit()
 
-    def render(self):
-        """Renders the game."""
-        self.renderer.render(self.field, self.ball, self.hole)
-
-        # Draw aiming line if in AIMING state and mouse is clicked
-        if self.game_state == "AIMING" and self.aim_start_pos is not None and self.aim_end_pos is not None:
-            # Draw line from ball position towards the opposite direction of the aim vector
-            # The line represents the direction and magnitude of the shot
-            aim_vector = self.aim_start_pos - self.aim_end_pos
-            line_end_pos = self.ball.position + aim_vector # Draw line indicating shot direction/power
-            # Limit the line length if it gets too long
-            max_aim_length = 200 # Pixels
-            if aim_vector.length() > max_aim_length:
-                 aim_vector.scale_to_length(max_aim_length)
-                 line_end_pos = self.ball.position + aim_vector
-
-            # Draw the line from the ball's current position
-            pygame.draw.line(self.screen, BLACK, (int(self.ball.position.x), int(self.ball.position.y)), (int(line_end_pos.x), int(line_end_pos.y)), 3)
-
-
-    def run(self):
-        """Main game loop."""
-        running = True
-        while running:
-            # Calculate delta time in seconds
-            dt = self.clock.tick(FPS) / 1000.0
-
-            running = self.handle_input()
-            if not running:
-                break
-
-            self.update(dt)
-            self.render()
-
-        pygame.quit()
-        sys.exit()
-
-# --- Entry Point ---
+# --- Run the game ---
 if __name__ == "__main__":
+    main()
