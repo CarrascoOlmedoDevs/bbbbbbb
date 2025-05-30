@@ -1,7 +1,7 @@
 import pygame
 import sys
-import math # Import math for distance calculation
-import pygame.math # Import pygame.math for Vector2
+import math
+import pygame.math
 
 # --- Constants ---
 SCREEN_WIDTH = 800
@@ -76,56 +76,89 @@ class Hole:
         """Check if the ball's center is within the hole's radius."""
         distance = (ball.position - self.position).length()
         # Check if distance is less than the hole radius
+        # Add a small tolerance or check against radius difference for more realistic "falling in"
+        # For now, simple radius check:
         return distance < self.radius
 
 class PhysicsEngine:
-    """Handles physics calculations for game objects."""
-    def __init__(self, friction_factor_per_second, velocity_stop_threshold):
-        self.friction_factor_per_second = friction_factor_per_second
-        self.velocity_stop_threshold = velocity_stop_threshold
+    """Handles physics updates for game objects."""
+    def __init__(self, field_rect, friction_factor_per_second, velocity_stop_threshold, bounce_damping):
+        self.field_rect = field_rect
+        self.friction_factor = friction_factor_per_second
+        self.stop_threshold = velocity_stop_threshold
+        self.bounce_damping = bounce_damping
 
-    def update_ball(self, ball, dt):
-        """Applies physics (like friction) to the ball."""
+    def update(self, ball, dt):
+        """Updates the ball's position and velocity based on physics."""
+        # Stop ball if velocity is below threshold
+        if ball.velocity.length() < self.stop_threshold and ball.is_moving:
+             ball.velocity = pygame.math.Vector2(0, 0)
+             ball.is_moving = False
+
         if ball.is_moving:
-            # Apply friction: velocity decreases exponentially
-            # friction_factor_per_frame = self.friction_factor_per_second ** dt
-            # A simpler linear approximation for small dt: velocity *= (1 - friction_rate * dt)
-            # Let's use the exponential decay which is more accurate
-            friction_factor_per_frame = self.friction_factor_per_second ** dt
-            ball.velocity *= friction_factor_per_frame
+            # Apply friction
+            # Calculate friction factor adjusted for delta time
+            friction_factor_dt = self.friction_factor ** dt
+            ball.velocity *= friction_factor_dt
 
-            # Update position based on velocity
+            # Update position
             ball.position += ball.velocity * dt
 
-            # Check if velocity is below threshold to stop movement
-            if ball.velocity.length() < self.velocity_stop_threshold:
-                ball.velocity = pygame.math.Vector2(0, 0)
-                ball.is_moving = False
-        else:
-            # If not moving, ensure velocity is zero
-            ball.velocity = pygame.math.Vector2(0, 0)
+            # Handle boundary collisions
+            collided = False
+            # Check right boundary
+            if ball.position.x + ball.radius > self.field_rect.right:
+                ball.position.x = self.field_rect.right - ball.radius
+                ball.velocity.x *= -self.bounce_damping # Reverse and dampen velocity
+                collided = True
+            # Check left boundary
+            elif ball.position.x - ball.radius < self.field_rect.left:
+                ball.position.x = self.field_rect.left + ball.radius
+                ball.velocity.x *= -self.bounce_damping
+                collided = True
+            # Check bottom boundary
+            if ball.position.y + ball.radius > self.field_rect.bottom:
+                ball.position.y = self.field_rect.bottom - ball.radius
+                ball.velocity.y *= -self.bounce_damping
+                collided = True
+            # Check top boundary
+            elif ball.position.y - ball.radius < self.field_rect.top:
+                ball.position.y = self.field_rect.top + ball.radius
+                ball.velocity.y *= -self.bounce_damping
+                collided = True
 
-    # Add methods for applying forces, handling collisions, etc. here later
+            # If a collision occurred, re-check if velocity is now below threshold
+            # This prevents the ball from bouncing forever with tiny velocities
+            if collided and ball.velocity.length() < self.stop_threshold:
+                 ball.velocity = pygame.math.Vector2(0, 0)
+                 ball.is_moving = False
 
-# --- Initialization ---
+
+# --- Game Setup ---
 pygame.init()
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Simple Golf Game")
+pygame.display.set_caption("Mini Golf")
 clock = pygame.time.Clock()
 
-# Create game objects
+# --- Game State Variables ---
+game_state = 'playing' # Possible states: 'playing', 'hole_completed'
+shot_count = 0
+
+# --- Game Objects ---
 ball = Ball(BALL_START_POS, BALL_RADIUS, RED)
 hole = Hole(HOLE_POS, HOLE_RADIUS, BLACK)
 
-# Create physics engine instance
-physics_engine = PhysicsEngine(FIELD_FRICTION_FACTOR_PER_SECOND, VELOCITY_STOP_THRESHOLD)
+# --- Physics Engine Instance ---
+physics_engine = PhysicsEngine(FIELD_RECT, FIELD_FRICTION_FACTOR_PER_SECOND, VELOCITY_STOP_THRESHOLD, BOUNCE_DAMPING)
 
-# --- Game State ---
-# Could use a more complex state machine, but a simple flag works for now
-ball_in_hole = False
+# --- Font for UI ---
+font = pygame.font.Font(None, 36) # Default font, size 36
 
 # --- Game Loop ---
 running = True
+is_pulling = False # Flag to indicate if the player is currently pulling the ball
+pull_start_pos = pygame.math.Vector2(0, 0) # Position where pull started
+
 while running:
     dt = clock.tick(FPS) / 1000.0 # Delta time in seconds
 
@@ -133,74 +166,82 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        # Basic input: Click to apply a force (for testing movement)
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1 and not ball.is_moving and not ball_in_hole: # Left click, ball not moving, not in hole
-                 # Calculate direction vector from ball to mouse click
-                 mouse_pos = pygame.math.Vector2(event.pos)
-                 direction = mouse_pos - ball.position
-                 # Apply a force (e.g., proportional to distance, capped)
-                 force_magnitude = min(direction.length() * 50, 1000) # Example force calculation
-                 if direction.length() > 0:
-                     # Apply force as an instant velocity change for simplicity here
-                     # In a real simulation, apply force over time (F=ma)
-                     ball.velocity = direction.normalize() * force_magnitude
-                     ball.is_moving = True
-                     print(f"Applied velocity: {ball.velocity.length():.2f}")
+            if event.button == 1: # Left mouse button
+                # Allow pulling only if in 'playing' state and ball is not moving
+                if game_state == 'playing' and not ball.is_moving:
+                    mouse_pos = pygame.math.Vector2(event.pos)
+                    # Check if click is on the ball (within a certain radius)
+                    if (mouse_pos - ball.position).length() < ball.radius + 10: # Add tolerance for easier clicking
+                        is_pulling = True
+                        pull_start_pos = mouse_pos
+
+        if event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1: # Left mouse button
+                if is_pulling:
+                    is_pulling = False
+                    # Calculate launch vector (opposite of pull vector)
+                    current_mouse_pos = pygame.math.Vector2(event.pos)
+                    pull_vector = current_mouse_pos - pull_start_pos
+                    # Apply a force/velocity based on the pull vector
+                    # Need to tune a force_factor or velocity_multiplier
+                    FORCE_FACTOR = 5 # Example value, adjust as needed
+                    ball.velocity = -pull_vector * FORCE_FACTOR
+                    ball.is_moving = True # Ball is now moving
+                    shot_count += 1 # Increment shot count
+
+        # Basic key press handling (e.g., restart)
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r: # Press 'R' to restart
+                game_state = 'playing'
+                shot_count = 0
+                ball.position = pygame.math.Vector2(BALL_START_POS)
+                ball.velocity = pygame.math.Vector2(0, 0)
+                ball.is_moving = False
+                is_pulling = False # Ensure not pulling after restart
 
 
     # --- Game Logic ---
 
-    if not ball_in_hole: # Only update ball if not in hole
-        # Update ball physics (friction, velocity, position)
-        physics_engine.update_ball(ball, dt)
+    # Update physics only if the ball is moving
+    if ball.is_moving:
+        physics_engine.update(ball, dt)
 
-        # --- Collision Detection and Response ---
+    # Check for ball in hole ONLY if ball is not moving (or moving very slowly)
+    # and game state is 'playing'
+    if game_state == 'playing' and not ball.is_moving:
+         if hole.is_ball_in_hole(ball):
+             game_state = 'hole_completed'
+             # Snap ball to hole center and stop movement completely
+             ball.position = pygame.math.Vector2(hole.position)
+             ball.velocity = pygame.math.Vector2(0, 0)
+             ball.is_moving = False
 
-        # 1. Ball vs Field Boundaries
-        # Check for collision and reflect velocity with damping
-        if ball.position.x - ball.radius < FIELD_RECT.left:
-            ball.position.x = FIELD_RECT.left + ball.radius # Correct position
-            ball.velocity.x *= -BOUNCE_DAMPING              # Reflect and dampen
-            # Ensure ball is marked as moving if it bounces
-            if ball.velocity.length() > VELOCITY_STOP_THRESHOLD:
-                 ball.is_moving = True
-
-        elif ball.position.x + ball.radius > FIELD_RECT.right:
-            ball.position.x = FIELD_RECT.right - ball.radius # Correct position
-            ball.velocity.x *= -BOUNCE_DAMPING               # Reflect and dampen
-            if ball.velocity.length() > VELOCITY_STOP_THRESHOLD:
-                 ball.is_moving = True
-
-        if ball.position.y - ball.radius < FIELD_RECT.top:
-            ball.position.y = FIELD_RECT.top + ball.radius   # Correct position
-            ball.velocity.y *= -BOUNCE_DAMPING               # Reflect and dampen
-            if ball.velocity.length() > VELOCITY_STOP_THRESHOLD:
-                 ball.is_moving = True
-
-        elif ball.position.y + ball.radius > FIELD_RECT.bottom:
-            ball.position.y = FIELD_RECT.bottom - ball.radius # Correct position
-            ball.velocity.y *= -BOUNCE_DAMPING                # Reflect and dampen
-            if ball.velocity.length() > VELOCITY_STOP_THRESHOLD:
-                 ball.is_moving = True
-
-
-        # 2. Ball vs Hole
-        # Check if ball is within hole radius AND slow enough to fall in
-        # Use a slightly higher threshold for falling in than the stop threshold
-        HOLE_SINK_VELOCITY_THRESHOLD = VELOCITY_STOP_THRESHOLD * 4 # Example: 4 times the stop threshold
-        if hole.is_ball_in_hole(ball) and ball.velocity.length() < HOLE_SINK_VELOCITY_THRESHOLD:
-            ball.position = pygame.math.Vector2(hole.position) # Snap to hole center
-            ball.velocity = pygame.math.Vector2(0, 0) # Stop the ball
-            ball.is_moving = False
-            ball_in_hole = True # Mark ball as in hole
-            print("Ball in hole!") # Basic feedback
 
     # --- Drawing ---
     screen.fill(GREEN) # Fill background with field color
 
-    hole.draw(screen) # Draw the hole
-    ball.draw(screen) # Draw the ball
+    hole.draw(screen)
+    ball.draw(screen)
+
+    # Draw pull line if pulling
+    if is_pulling:
+        current_mouse_pos = pygame.math.Vector2(pygame.mouse.get_pos())
+        # Draw line from ball to current mouse position
+        pygame.draw.line(screen, BLACK, ball.position, current_mouse_pos, 3)
+        # Could add arrow head here for direction
+
+    # Draw UI elements
+    # Draw shot count
+    shot_text_surface = font.render(f"Shots: {shot_count}", True, BLACK)
+    screen.blit(shot_text_surface, (10, 10))
+
+    # Draw game state message if applicable
+    if game_state == 'hole_completed':
+        win_text_surface = font.render("Hole Completed!", True, BLACK)
+        text_rect = win_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+        screen.blit(win_text_surface, text_rect)
+        # Optional: Display final score/shots here too
 
     # --- Update Display ---
     pygame.display.flip()
