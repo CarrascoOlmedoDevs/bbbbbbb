@@ -2,7 +2,28 @@ import pygame
 import sys
 import math # Import math for distance calculation
 
-# --- Placeholders for Game Components ---
+# --- Constants ---
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+FPS = 60
+
+# --- Colors ---
+WHITE = (255, 255, 255)
+GREEN = (0, 128, 0) # Field color
+RED = (255, 0, 0)   # Ball color
+BLACK = (0, 0, 0)   # Hole color
+
+# --- Game Object Initial Positions and Sizes ---
+BALL_RADIUS = 15
+BALL_START_X = SCREEN_WIDTH // 4
+BALL_START_Y = SCREEN_HEIGHT // 2
+
+HOLE_RADIUS = 20
+HOLE_POS_X = SCREEN_WIDTH * 3 // 4
+HOLE_POS_Y = SCREEN_HEIGHT // 2
+
+
+# --- Game Components ---
 
 class Ball:
     """Represents the game ball."""
@@ -76,249 +97,125 @@ class PhysicsEngine:
         ball.x += ball.velocity[0] * dt
         ball.y += ball.velocity[1] * dt
 
-        # Simple boundary check (optional for now, might be part of field)
-        # Prevents ball from leaving screen
-        if ball.x < ball.radius:
-            ball.x = ball.radius
-            ball.velocity[0] *= -0.8 # Bounce with some energy loss
-        elif ball.x > self.field.width - ball.radius:
-            ball.x = self.field.width - ball.radius
-            ball.velocity[0] *= -0.8
-
-        if ball.y < ball.radius:
-            ball.y = ball.radius
-            ball.velocity[1] *= -0.8
-        elif ball.y > self.field.height - ball.radius:
-            ball.y = self.field.height - ball.radius
-            ball.velocity[1] *= -0.8
-
-
         # Check if ball has stopped
-        current_speed_sq = ball.velocity[0]**2 + ball.velocity[1]**2
-        if current_speed_sq < self.min_speed_to_stop**2:
-             ball.velocity = [0.0, 0.0]
-             ball.is_moving = False
+        speed = math.sqrt(ball.velocity[0]**2 + ball.velocity[1]**2)
+        if speed < self.min_speed_to_stop:
+            ball.velocity = [0.0, 0.0]
+            ball.is_moving = False
 
-
-    def check_hole(self, ball, hole):
-        """Check if the ball is in the hole."""
-        # Calculate distance between ball center and hole center
-        distance = math.dist((ball.x, ball.y), (hole.x, hole.y))
-
-        # Check if distance is less than the hole radius (ball center inside hole)
-        # A more realistic check might involve ball radius and velocity
-        if distance < hole.radius:
-             # Check if ball is moving slow enough to fall in
-             speed_sq = ball.velocity[0]**2 + ball.velocity[1]**2
-             holed_speed_threshold = 50 # Speed threshold to fall in (pixels/sec)
-             if speed_sq < holed_speed_threshold**2:
-                 return True
-        return False # Return True if ball is in hole
-
-class Renderer:
-    """Handles drawing all game elements."""
-    def __init__(self, surface):
-        self.surface = surface
-        self.font = pygame.font.Font(None, 36) # Default font for messages
-
-    def render(self, field, ball, hole, game_state, input_handler):
-        """Draw all game objects."""
-        # Draw background
-        self.surface.fill(field.color)
-
-        # Draw field elements (obstacles etc.)
-        field.draw(self.surface)
-
-        # Draw the hole
-        hole.draw(self.surface)
-
-        # Draw the ball
-        ball.draw(self.surface)
-
-        # Draw aiming line if in aiming state and dragging
-        if game_state == "aiming" and input_handler.is_dragging and input_handler.mouse_down_pos:
-            mouse_pos = pygame.mouse.get_pos()
-            # Draw line from ball position to current mouse position while dragging
-            # This visualizes the *drag* vector, the shot will be opposite
-            # pygame.draw.line(self.surface, (255, 0, 0), (int(ball.x), int(ball.y)), mouse_pos, 3) # From ball to mouse
-            # Draw line from mouse_down_pos to current mouse_pos
-            pygame.draw.line(self.surface, (255, 0, 0), input_handler.mouse_down_pos, mouse_pos, 3) # From drag start to current mouse
-
-            # Optional: Draw arrow indicating shot direction/power
-            drag_vec = (mouse_pos[0] - input_handler.mouse_down_pos[0], mouse_pos[1] - input_handler.mouse_down_pos[1])
-            shot_vec = (-drag_vec[0], -drag_vec[1])
-            shot_power = (shot_vec[0]**2 + shot_vec[1]**2)**0.5 * 0.5 # Match power calculation scale
-            max_draw_power = 150 # Max length of the drawn shot line
-            draw_length = min(shot_power, max_draw_power)
-
-            if draw_length > 0:
-                 norm = (shot_vec[0]**2 + shot_vec[1]**2)**0.5
-                 if norm > 0:
-                     draw_vec_normalized = (shot_vec[0] / norm, shot_vec[1] / norm)
-                     end_point = (ball.x + draw_vec_normalized[0] * draw_length,
-                                  ball.y + draw_vec_normalized[1] * draw_length)
-                     pygame.draw.line(self.surface, (0, 0, 0), (int(ball.x), int(ball.y)), (int(end_point[0]), int(end_point[1])), 5) # Shot direction line
-
-        # Display game state or messages
-        if game_state == "aiming":
-            message = "Aiming"
-        elif game_state == "ball_moving":
-            message = "Ball Moving"
-        elif game_state == "holed":
-            message = "HOLED!"
-        else:
-            message = game_state # Display other states
-
-        text_surface = self.font.render(message, True, (0, 0, 0))
-        text_rect = text_surface.get_rect(center=(self.surface.get_width() // 2, 30))
-        self.surface.blit(text_surface, text_rect)
-
-
-        # Update the full screen
-        pygame.display.flip()
 
 class InputHandler:
-    """Handles user input (mouse, keyboard)."""
-    def __init__(self):
-        self.mouse_down_pos = None
+    """Handles user input."""
+    def __init__(self, ball):
+        self.ball = ball
         self.is_dragging = False
+        self.drag_start_pos = None
 
     def handle_event(self, event):
-        """Process a single Pygame event."""
+        """Process a single pygame event."""
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1: # Left click
-                self.mouse_down_pos = event.pos
-                self.is_dragging = True
-                # print(f"Mouse down at {self.mouse_down_pos}") # Debug
+                # Check if click is on the ball
+                mouse_x, mouse_y = event.pos
+                dist_to_ball = math.dist((mouse_x, mouse_y), (self.ball.x, self.ball.y))
+                if dist_to_ball <= self.ball.radius and not self.ball.is_moving:
+                    self.is_dragging = True
+                    self.drag_start_pos = event.pos
+                    print("Started dragging") # Debug print
 
         elif event.type == pygame.MOUSEBUTTONUP:
-            if event.button == 1: # Left click
-                if self.is_dragging:
-                    mouse_up_pos = event.pos
-                    # print(f"Mouse up at {mouse_up_pos}") # Debug
-                    self.is_dragging = False
-                    # Signal a shot attempt with the drag start and end positions
-                    return "shot_attempt", self.mouse_down_pos, mouse_up_pos
+            if event.button == 1 and self.is_dragging: # Left click release
+                self.is_dragging = False
+                drag_end_pos = event.pos
+                print("Stopped dragging") # Debug print
+                self.apply_shot(self.drag_start_pos, drag_end_pos)
+                self.drag_start_pos = None
 
-        return None # No specific action signal
+    def apply_shot(self, start_pos, end_pos):
+        """Calculate and apply velocity based on drag."""
+        if start_pos and end_pos:
+            # Vector from end to start determines direction
+            # Magnitude determines speed
+            vec_x = start_pos[0] - end_pos[0]
+            vec_y = start_pos[1] - end_pos[1]
+
+            # Apply velocity (scale factor might be needed)
+            # Example scaling: 0.5
+            speed_factor = 0.5
+            self.ball.velocity[0] = vec_x * speed_factor
+            self.ball.velocity[1] = vec_y * speed_factor
+            self.ball.is_moving = True
+            print(f"Applied velocity: {self.ball.velocity}") # Debug print
+
+    def draw_drag_line(self, surface):
+        """Draw the line representing the shot direction and power."""
+        if self.is_dragging and self.drag_start_pos:
+            current_mouse_pos = pygame.mouse.get_pos()
+            # Draw line from ball position to current mouse position
+            # The direction of the line represents the *opposite* of the shot direction
+            pygame.draw.line(surface, BLACK, (int(self.ball.x), int(self.ball.y)), current_mouse_pos, 3)
 
 
-    def update(self):
-        """Update input state (e.g., check mouse button held down)."""
-        # This method might be used for continuous actions, but for golf shot, events are better.
-        # Could check if mouse is currently held down and update drag state if needed.
-        pass
+class Renderer:
+    """Handles drawing game objects."""
+    def __init__(self, screen, field, ball, hole):
+        self.screen = screen
+        self.field = field
+        self.ball = ball
+        self.hole = hole
 
-# --- Pygame Initialization ---
+    def render(self, input_handler):
+        """Draw all game elements."""
+        # Draw field background
+        self.screen.fill(self.field.color)
+
+        # Draw hole
+        self.hole.draw(self.screen)
+
+        # Draw ball
+        self.ball.draw(self.screen)
+
+        # Draw input elements (like drag line)
+        input_handler.draw_drag_line(self.screen)
+
+        # Update the display
+        pygame.display.flip()
+
+
+# --- Game Setup ---
 pygame.init()
-
-# Screen dimensions
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Pygame Golf Outline")
-
-# Clock for controlling frame rate and delta time
+pygame.display.set_caption("Mini Golf")
 clock = pygame.time.Clock()
-FPS = 60 # Frames per second
 
-# --- Game Objects Initialization ---
-# Using placeholder positions and colors
-field_color = (100, 200, 100) # Green
-ball_color = (255, 255, 255) # White
-hole_color = (50, 50, 50)   # Dark Grey
-
-field = Field(SCREEN_WIDTH, SCREEN_HEIGHT, field_color)
-ball = Ball(SCREEN_WIDTH // 4, SCREEN_HEIGHT // 2, 10, ball_color) # Start ball left of center
-hole = Hole(SCREEN_WIDTH * 3 // 4, SCREEN_HEIGHT // 2, 15, hole_color) # Hole right of center
+# --- Create Game Objects ---
+field = Field(SCREEN_WIDTH, SCREEN_HEIGHT, GREEN)
+ball = Ball(BALL_START_X, BALL_START_Y, BALL_RADIUS, RED)
+hole = Hole(HOLE_POS_X, HOLE_POS_Y, HOLE_RADIUS, BLACK) # Using BLACK for the hole color
 
 physics_engine = PhysicsEngine(field)
-renderer = Renderer(screen)
-input_handler = InputHandler()
+input_handler = InputHandler(ball)
+renderer = Renderer(screen, field, ball, hole)
 
-# --- Game State ---
-game_state = "aiming" # Possible states: "aiming", "ball_moving", "holed", "out_of_bounds"
-shots_taken = 0 # Track number of shots
 
-# --- Main Game Loop ---
+# --- Game Loop ---
 running = True
 while running:
-    # Calculate delta time in seconds
-    dt = clock.tick(FPS) / 1000.0
+    dt = clock.tick(FPS) / 1000.0 # Delta time in seconds
 
     # --- Event Handling ---
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        input_handler.handle_event(event)
 
-        # Pass events to input handler
-        action = input_handler.handle_event(event)
-
-        # Process actions based on game state
-        if action and action[0] == "shot_attempt":
-            if game_state == "aiming":
-                # Calculate shot vector and power
-                mouse_down_pos = action[1]
-                mouse_up_pos = action[2]
-
-                # Calculate vector from mouse_down_pos to mouse_up_pos
-                drag_vector = (mouse_up_pos[0] - mouse_down_pos[0], mouse_up_pos[1] - mouse_down_pos[1])
-                # The shot velocity is in the opposite direction of the drag vector
-                shot_vector = (-drag_vector[0], -drag_vector[1])
-
-                # Calculate power (e.g., proportional to drag distance)
-                # Scale factor determines how sensitive the power is to drag distance
-                power_scale = 0.5 # Adjust this to make shots stronger or weaker
-                power = (shot_vector[0]**2 + shot_vector[1]**2)**0.5 * power_scale
-                max_power = 500 # Limit maximum initial velocity
-
-                if power > 10: # Only shoot if enough power to avoid accidental clicks
-                    power = min(power, max_power)
-
-                    # Normalize shot vector and scale by power
-                    norm = (shot_vector[0]**2 + shot_vector[1]**2)**0.5
-                    if norm > 0:
-                        ball.velocity[0] = (shot_vector[0] / norm) * power
-                        ball.velocity[1] = (shot_vector[1] / norm) * power
-                        game_state = "ball_moving"
-                        shots_taken += 1
-                        print(f"Shot {shots_taken} with velocity: {ball.velocity}, power: {power}") # Debug
-                    else:
-                         # If norm is 0, it means mouse_down_pos == mouse_up_pos, no drag
-                         pass # Do nothing if no drag
-
-    # --- Game State Update ---
-    if game_state == "ball_moving":
-        physics_engine.update(ball, dt)
-        # ball.update(dt) # Ball update might not be needed if physics engine modifies ball directly
-
-        # Check if ball has stopped after physics update
-        if not ball.is_moving:
-            # Ball stopped, check if it's in the hole
-            if physics_engine.check_hole(ball, hole):
-                game_state = "holed"
-                print(f"Ball holed in {shots_taken} shots!")
-                # TODO: Add logic for next level or game over
-            else:
-                game_state = "aiming" # Ball stopped, ready for next shot
-                print("Ball stopped. Ready for next shot.")
-
-    elif game_state == "holed":
-        # Game is won or level complete. Could add a delay or wait for input.
-        pass # For now, just stays in this state
-
-    elif game_state == "aiming":
-        # The input handler is capturing mouse drag in this state
-        pass
-
+    # --- Game State Updates ---
+    physics_engine.update(ball, dt)
 
     # --- Drawing ---
-    # Pass input_handler to renderer to draw the aiming line
-    renderer.render(field, ball, hole, game_state, input_handler)
+    renderer.render(input_handler)
 
-    # --- Update Display ---
-    # Handled by renderer.render() -> pygame.display.flip()
 
 # --- Quit Pygame ---
 pygame.quit()
-sys.exit() # Good practice to exit sys as well
+sys.exit()
